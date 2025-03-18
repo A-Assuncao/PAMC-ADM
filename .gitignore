@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Cursor
+.cursor
+
+# Error log
+error_log.log
+
+# Outros
+Lista Presos.xlsx
