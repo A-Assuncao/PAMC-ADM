@@ -87,6 +87,8 @@ O aplicativo irá:
 5. Processar e formatar os dados coletados
 6. Exportar os resultados para um arquivo Excel organizado
 
+Para instruções detalhadas de uso, consulte o [Guia de Utilização](docs/README.md).
+
 ## Estrutura do Projeto
 
 ```
@@ -157,34 +159,15 @@ O sistema oferece diversas opções para personalizar a execução:
 
 ## Sistema de Atualização
 
-O PAMC-ADM inclui um sistema de atualização automática que verifica por novas versões nas Releases do GitHub:
+O PAMC-ADM inclui um sistema de atualização automática que verifica a existência de novas versões no repositório GitHub e permite a atualização com apenas um clique.
 
-- **Verificação Automática**: Detecta novas versões disponíveis usando a API do GitHub
-- **Notas de Versão**: Exibe as novidades e melhorias da nova versão
-- **Download Automático**: Baixa a nova versão automaticamente quando autorizado
-- **Instalação Simples**: Executa o instalador da nova versão com um clique
+Para criar uma nova release:
+- Atualize a versão no arquivo `src/utils/config.py`
+- Compile o executável atualizado
+- Crie uma Release no GitHub adicionando um título e descrição detalhada das mudanças
+- Faça upload do executável e publique a release
 
-### Como Funciona
-
-1. Na inicialização, o programa consulta a API do GitHub para verificar a release mais recente
-2. Se uma versão mais recente for encontrada, um diálogo mostra as notas da versão e pergunta se o usuário deseja atualizar
-3. Se confirmado, o programa baixa automaticamente o executável vinculado à release
-4. O instalador é executado e o programa atual é fechado
-
-### Para Desenvolvedores
-
-Para lançar uma nova versão:
-
-1. Atualize a versão no arquivo `src/utils/config.py`
-2. Compile a aplicação como um executável (.exe)
-3. No GitHub, crie uma nova Release:
-   - Clique em "Releases" > "Draft a new release"
-   - Defina a Tag version como a versão (ex: `v1.0.1`)
-   - Adicione um título e descrição detalhando as mudanças
-   - Faça upload do arquivo executável para a release
-   - Publique a release
-
-Para instruções detalhadas sobre como criar releases, consulte o [Guia de Criação de Releases](docs/criar_release.md).
+Para mais detalhes sobre as mudanças entre versões, consulte o [CHANGELOG](CHANGELOG.md).
 
 ## Contribuição
 
@@ -196,7 +179,7 @@ Contribuições são bem-vindas! Sinta-se à vontade para:
 
 ## Licença
 
-Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
+Este projeto está licenciado sob a [Licença MIT](LICENSE) - veja o arquivo LICENSE para detalhes.
 
 ---
 
