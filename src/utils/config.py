@@ -3,7 +3,7 @@ import os
 
 # Configurações de Atualização
 APP_NAME = "PAMC-ADM"
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.1.0"
 GITHUB_REPO = "A-Assuncao/PAMC-ADM"  # Formato: "dono/repositório"
 
 # URLs do sistema
@@ -15,6 +15,8 @@ URL_CERTIDAO_CARCERARIA = 'https://canaime.com.br/sgp2rr/areas/impressoes/UND_Ce
 URL_FICHA_CARCERARIA = 'https://canaime.com.br/sgp2rr/areas/impressoes/UND_FichaCarceraria.php?id_cad_preso='
 INICIO_URL_FOTOS = 'https://canaime.com.br/sgp2rr/fotos/presos/'
 URL_UNIDADE = 'https://canaime.com.br/sgp2rr/areas/impressoes/UND_ChamadaFOTOS_todos2.php?id_und_prisional='
+# Link do menu de cadastro do preso (usado na coluna CADASTRO do Excel)
+URL_FICHA_MENU = 'https://canaime.com.br/sgp2rr/areas/unidades/Ficha_Menu.php?id_cad_preso='
 
 # Lista de unidades prisionais disponíveis
 UNIDADES_PRISIONAIS = ['PAMC', 'CPBV', 'CPFBV', 'CPP', 'CABV', 'UPRRO', 'CME', 'DICAP']
@@ -39,12 +41,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 0
 
 # Ordem das colunas no arquivo final
+# ÚLTIMO LANÇAMENTO deve ser sempre a última coluna
 COLUNAS = [
     # 1. Identificação e Localização na Instituição
     'UP',
     'ALA',
     'CELA',
     'CÓDIGO',
+    'CADASTRO',
     'FOTO',
     
     # 2. Dados Pessoais e Documentação
@@ -75,7 +79,9 @@ COLUNAS = [
     'PROFISSÃO',
     'RELIGIÃO',
     
-    # 6. Dados Criminais e Processuais
+    # 6. Dados Criminais e Processuais (RJI e Biometria logo após info pessoais)
+    'RJI',
+    'BIOMETRIA',
     'CONDUTA',
     'CONDENADO?',
     'REU',
@@ -88,7 +94,7 @@ COLUNAS = [
     'MODUS OPERANDI',
     'SENTENÇA DIAS',
     'DATA ÚLTIMO LANÇAMENTO',
-    'ÚLTIMO LANÇAMENTO',
+    'ÚLTIMO LANÇAMENTO',  # Sempre a última coluna
 ]
 
 # Seletores para a lista de presos (primeira página)
@@ -99,9 +105,10 @@ SELETORES_LISTA_PRESOS = {
 
 # Localizadores organizados por URL para extração de dados
 LOCALIZADORES = {
-    # Página de ficha do preso
+    # Página de ficha do preso (listra .titulobk: Código, RJI, Nome, Vulgo)
     'URL_FICHA_PRESO': {
-        'VULGO': 'tr:nth-child(4) .titulobk',
+        'RJI': 'tr:nth-child(3) .titulobk',
+        'VULGO': 'tr:nth-child(5) .titulobk',
     },
     
     # Página de cadastro do preso
@@ -129,13 +136,13 @@ LOCALIZADORES = {
     
     # Página de certidão carcerária
     'URL_CERTIDAO_CARCERARIA': {
-        'CONDUTA': 'table+ table span.titulobk',
         'DATA ÚLTIMO LANÇAMENTO': 'table+ table .titulobk:nth-child(2)',
         'ÚLTIMO LANÇAMENTO': '.titulobk div',
     },
     
     # Página de ficha carcerária
     'URL_FICHA_CARCERARIA': {
+        'CONDUTA': 'p+ table span',
         'ESTADO CIVIL': 'tr:nth-child(11) .titulobk:nth-child(2)',
         'DATA PRISÃO': 'tr:nth-child(25) .titulobk:nth-child(2)',
         'DOM. CRIMINAL': 'tr:nth-child(26) .titulobk',
@@ -148,6 +155,16 @@ LOCALIZADORES = {
         'SENTENÇA DIAS': 'tr:nth-child(25) .titulobk~ .titulobk',
     }
 }
+
+# Seletores alternativos para RJI (listra .titulobk: Código, RJI, Nome, Vulgo)
+RJI_SELETORES_ALTERNATIVOS = [
+    'tr:nth-child(3) .titulobk',  # RJI na 3ª linha
+    'tr:nth-child(3) td',
+    'table tr:nth-child(3) .titulobk',
+    'table tr:nth-child(3) td',
+    'xpath=//tr[contains(., "RJI")]//td[last()]',  # última célula da linha que contém "RJI"
+    'xpath=//td[contains(., "RJI")]/following-sibling::td[1]',  # célula ao lado do rótulo RJI
+]
 
 LISTA_URLS_INFO_PRESO = [
     URL_FICHA_PRESO,

@@ -1,4 +1,5 @@
 from src.utils import config
+from src.utils.excel_loader import carregar_dados_excel, preso_existe_no_excel
 import pandas as pd
 import os
 import sys
@@ -7,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import time
 import re
+import traceback
 
 # Número máximo de tentativas para operações de rede
 MAX_TENTATIVAS = 3
@@ -138,6 +140,169 @@ def tratar_sentenca_dias(sentenca_str):
     
     return sentenca_str.replace(" DIAS", "").strip()
 
+
+def _rank_conduta(texto):
+    """Retorna o rank de gravidade da conduta (6=mais grave, 1=menos grave).
+    Ordem: FECHADO > PREVENTIVADO > SEMI ABERTO > ABERTO > ALVARÁ > EXTINTO.
+    Variações (ex: FECHADO FEDERAL) são tratadas pelo termo principal."""
+    if not texto:
+        return 0
+    t = texto.upper()
+    if 'FECHADO' in t:
+        return 6
+    if 'PREVENTIVADO' in t:
+        return 5
+    if 'SEMI' in t and 'ABERTO' in t:
+        return 4
+    if 'ABERTO' in t:
+        return 3
+    if 'ALVARÁ' in t or 'ALVARA' in t.replace('Á', 'A'):
+        return 2
+    if 'EXTINTO' in t:
+        return 1
+    return 0
+
+
+def extrair_conduta_mais_gravosa(elementos):
+    """
+    Extrai a conduta mais gravosa de uma lista de elementos.
+    Ordem de gravidade (mais grave primeiro): FECHADO > PREVENTIVADO > SEMI ABERTO > ABERTO > ALVARÁ > EXTINTO.
+    Variações (ex: FECHADO FEDERAL) são tratadas pelo termo principal.
+    Funciona com lista ou item único.
+    
+    Args:
+        elementos: Objeto locator do Playwright com vários elementos
+        
+    Returns:
+        str: A conduta mais gravosa ou string vazia
+    """
+    textos = []
+    try:
+        for i in range(elementos.count()):
+            txt = elementos.nth(i).text_content()
+            if txt and txt.strip():
+                textos.append(txt.strip())
+    except Exception:
+        pass
+    
+    if not textos:
+        return ""
+    return max(textos, key=_rank_conduta)
+
+
+def parsear_rji_biometria(texto_raw):
+    """
+    Parseia o texto do RJI para extrair número e status da biometria.
+    - Se não houver nenhum número no texto, o preso ainda não tem RJI -> ("", "Não coletada")
+    - O número RJI pode ter tamanhos variados.
+    - O texto após o número indica se a biometria foi coletada.
+    
+    Ex: "19279433565 POSSUI BIOMETRIA" -> ("19279433565", "Coletada")
+    Ex: "17000004189 Biometria Coletada" -> ("17000004189", "Coletada")
+    Ex: "17000004189" -> ("17000004189", "Não coletada")
+    Ex: "17000004189 Não coletada" -> ("17000004189", "Não coletada")
+    Ex: "POSSUI BIOMETRIA" (sem número) -> ("", "Não coletada") - ainda não tem RJI
+    Ex: "Não coletada" (sem número) -> ("", "Não coletada") - ainda não tem RJI
+    
+    Args:
+        texto_raw: Texto bruto do campo RJI
+        
+    Returns:
+        tuple: (numero_rji, status_biometria)
+    """
+    if not texto_raw or not isinstance(texto_raw, str):
+        return ("", "Não coletada")
+    
+    texto = texto_raw.strip()
+    if not texto:
+        return ("", "Não coletada")
+    
+    # Busca a primeira sequência de dígitos (e hífens) - RJI pode ter formatos como "123-456" ou "123456"
+    match_numero = re.search(r'(\d[\d\-]*)', texto)
+    if not match_numero:
+        # Sem número de RJI: ainda não tem RJI, mas o texto pode indicar biometria coletada
+        resto_lower = texto.lower()
+        positivos = ('possui biometria', 'biometria coletada', 'biometria realizada',
+                     'coletada', 'realizada')
+        if any(p in resto_lower for p in positivos):
+            return ("", "Coletada")
+        return ("", "Não coletada")
+    
+    numero = match_numero.group(1)
+    # Texto após o número (indica status da biometria)
+    pos_fim = match_numero.end()
+    resto = texto[pos_fim:].strip() if pos_fim < len(texto) else ""
+    
+    if not resto:
+        return (numero, "Não coletada")
+    
+    resto_lower = resto.lower()
+    # Textos que indicam biometria NÃO coletada
+    negativos = ('não coletada', 'nao coletada', 'não realizada', 'nao realizada',
+                 'nao coletado', 'não coletado', 'não possui', 'nao possui')
+    if any(n in resto_lower for n in negativos):
+        return (numero, "Não coletada")
+    
+    # Textos que indicam biometria coletada (possui, coletada, realizada, etc.)
+    positivos = ('possui biometria', 'biometria coletada', 'biometria realizada',
+                 'coletada', 'realizada')
+    if any(p in resto_lower for p in positivos):
+        return (numero, "Coletada")
+    
+    # Texto ambíguo ou desconhecido -> considerar não coletada
+    return (numero, "Não coletada")
+
+
+def extrair_rji_ficha(page):
+    """
+    Extrai o texto do campo RJI da página Ficha Preso.
+    Tenta múltiplos seletores pois a estrutura da tabela pode variar entre cadastros.
+    
+    Returns:
+        str: Texto bruto do campo RJI ou string vazia se não encontrar
+    """
+    seletores = getattr(config, 'RJI_SELETORES_ALTERNATIVOS', ['tr:nth-child(3) .titulobk'])
+    for seletor in seletores:
+        try:
+            loc = page.locator(seletor)
+            if loc.count() > 0:
+                texto = loc.first.text_content()
+                if texto and texto.strip():
+                    return texto.strip()
+        except Exception:
+            pass
+    # Fallback: na primeira tabela, pegar a 3ª linha (estrutura típica da Ficha Preso)
+    try:
+        rows = page.locator('table').first.locator('tr').all()
+        if len(rows) >= 3:
+            texto = rows[2].text_content()
+            if texto and texto.strip():
+                return texto.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def reordenar_colunas_excel(df, excluir_up=False):
+    """
+    Reordena as colunas do DataFrame conforme config.COLUNAS.
+    Garante que ÚLTIMO LANÇAMENTO seja sempre a última coluna.
+    
+    Args:
+        df: DataFrame a reordenar
+        excluir_up: Se True, não inclui a coluna UP na saída
+        
+    Returns:
+        DataFrame com colunas reordenadas
+    """
+    colunas_desejadas = [c for c in config.COLUNAS if c in df.columns and (not excluir_up or c != 'UP')]
+    # Garante que ÚLTIMO LANÇAMENTO seja a última coluna
+    if 'ÚLTIMO LANÇAMENTO' in df.columns and colunas_desejadas and colunas_desejadas[-1] != 'ÚLTIMO LANÇAMENTO':
+        colunas_desejadas = [c for c in colunas_desejadas if c != 'ÚLTIMO LANÇAMENTO'] + ['ÚLTIMO LANÇAMENTO']
+    extras = [c for c in df.columns if c not in config.COLUNAS and (not excluir_up or c != 'UP')]
+    return df[colunas_desejadas + extras].copy()
+
+
 def retry_em_caso_de_erro(func, *args, **kwargs):
     """
     Função para retentar operações em caso de erro de rede.
@@ -161,9 +326,38 @@ def retry_em_caso_de_erro(func, *args, **kwargs):
                 print(f"Falha após {MAX_TENTATIVAS} tentativas: {str(e)}")
                 raise
 
+def navegar_para_url(page, url):
+    """
+    Navega para uma URL específica e aguarda o carregamento da página.
+    Não depende de networkidle para evitar timeouts com requisições contínuas.
+    
+    Args:
+        page: Objeto page do Playwright
+        url: URL para navegação
+    """
+    print(f"[LOG] navegar_para_url: Navegando para {url}")
+    sys.stdout.flush()
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        print(f"[LOG] navegar_para_url: domcontentloaded alcançado")
+        sys.stdout.flush()
+        # Aguarda um pouco para garantir que a página carregou
+        time.sleep(2)
+        print(f"[LOG] navegar_para_url: Navegação concluída. URL atual: {page.url}")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"[LOG] navegar_para_url: ERRO ao navegar: {str(e)}")
+        sys.stdout.flush()
+        # Tenta continuar mesmo assim
+        try:
+            time.sleep(2)
+        except:
+            pass
+
 def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecionadas=None, modo_teste=False, limite_teste=10):
     """
     Extrai dados de presos de todas as unidades prisionais e cria um arquivo Excel.
+    Verifica se já existe um arquivo Excel com dados e só extrai informações de presos novos.
     
     Args:
         page: Objeto page do Playwright para navegação
@@ -176,24 +370,67 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
     Returns:
         dict: Dicionário com DataFrames consolidado, por unidade e caminho do arquivo Excel
     """
+    print("[LOG] ===== listar_presos_up() INICIADA =====")
+    print(f"[LOG] Parâmetros recebidos:")
+    print(f"[LOG]   - page: {type(page)} (None? {page is None})")
+    print(f"[LOG]   - caminho_saida: {caminho_saida}")
+    print(f"[LOG]   - interface: {type(interface)} (None? {interface is None})")
+    print(f"[LOG]   - unidades_selecionadas: {unidades_selecionadas}")
+    print(f"[LOG]   - modo_teste: {modo_teste}")
+    print(f"[LOG]   - limite_teste: {limite_teste}")
+    
+    # Verificar se page é válido
+    if page is None:
+        print("[LOG] ERRO CRÍTICO: page é None!")
+        return None
+    
+    try:
+        current_url = page.url
+        print(f"[LOG] URL atual da página: {current_url}")
+    except Exception as e:
+        print(f"[LOG] ERRO ao obter URL da página: {str(e)}")
+        return None
+    
+    # Em modo teste: não carregar Excel existente, para que a saída tenha apenas os 5/10 por unidade
+    if modo_teste:
+        print("[LOG] Modo teste: não carregando Excel existente (saída terá apenas os presos processados)")
+        dfs_unidades_existentes, df_consolidado_existente = {}, pd.DataFrame()
+    else:
+        print("[LOG] Carregando dados do Excel existente...")
+        try:
+            dfs_unidades_existentes, df_consolidado_existente = carregar_dados_excel()
+            print(f"[LOG] Excel carregado: {len(dfs_unidades_existentes)} unidades, {len(df_consolidado_existente)} registros consolidados")
+        except Exception as e:
+            print(f"[LOG] ERRO ao carregar Excel: {str(e)}")
+            dfs_unidades_existentes, df_consolidado_existente = {}, pd.DataFrame()
+    
     # Dicionário para armazenar os DataFrames de cada unidade
-    dfs_unidades = {}
-    # DataFrame para consolidar todas as unidades
-    df_consolidado = pd.DataFrame(columns=config.COLUNAS)
+    print("[LOG] Inicializando estruturas de dados...")
+    dfs_unidades = dfs_unidades_existentes.copy() if dfs_unidades_existentes else {}
+    
+    # Inicializa o DataFrame consolidado com as colunas corretas
+    df_consolidado = df_consolidado_existente.copy() if not df_consolidado_existente.empty else pd.DataFrame(columns=config.COLUNAS)
+    print(f"[LOG] DataFrame consolidado inicializado com {len(df_consolidado)} registros e {len(df_consolidado.columns)} colunas")
     
     # Verificar se deve usar a interface ou console
     usando_interface = interface is not None
+    print(f"[LOG] Usando interface: {usando_interface}")
     
     # Define quais unidades serão processadas
     if unidades_selecionadas:
         unidades_para_processar = unidades_selecionadas
+        print(f"[LOG] Usando unidades selecionadas: {unidades_para_processar}")
     else:
         unidades_para_processar = config.UNIDADES_PRISIONAIS
+        print(f"[LOG] Usando todas as unidades: {unidades_para_processar}")
     
     # Contador para acompanhar o progresso
     total_unidades = len(unidades_para_processar)
+    print(f"[LOG] Total de unidades a processar: {total_unidades}")
+    print("[LOG] ===== INICIANDO LOOP DE PROCESSAMENTO DE UNIDADES =====")
     
     for i, up in enumerate(unidades_para_processar):
+        print(f"[LOG] ===== PROCESSANDO UNIDADE {i+1}/{total_unidades}: {up} =====")
         # Atualiza a barra de progresso e o status na interface
         percentual = (i / total_unidades) * 100
         mensagem = f"Processando unidade: {up} ({i+1}/{total_unidades})"
@@ -208,107 +445,101 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
         else:
             print(mensagem)
         
-        df_presos = pd.DataFrame(columns=config.COLUNAS)
+        # Navegar para a página da unidade
+        url = config.URL_UNIDADE + up
+        print(f"[LOG] Navegando para URL da unidade {up}: {url}")
+        sys.stdout.flush()
+        try:
+            print(f"[LOG] Executando navegar_para_url()...")
+            sys.stdout.flush()
+            navegar_para_url(page, url)
+            print(f"[LOG] Navegação para unidade {up} concluída. URL atual: {page.url}")
+            sys.stdout.flush()
+        except Exception as e:
+            erro = f"Erro ao acessar unidade {up}: {str(e)}"
+            print(f"[LOG] ERRO: {erro}")
+            print(f"[LOG] Traceback: {traceback.format_exc()}")
+            sys.stdout.flush()
+            continue
         
-        # Navegação com retry para lidar com problemas de conexão
-        def navegar_para_url(url):
-            return retry_em_caso_de_erro(page.goto, url)
-        
-        # Navegar para a página da unidade com retry
-        navegar_para_url(config.URL_UNIDADE + up)
-        
-        # Obter todas as fotos e containers de uma vez
-        # Usar .all() para obter todos os elementos de imagem, depois coletar os atributos src individualmente
-        elementos_foto = retry_em_caso_de_erro(page.locator, config.SELETORES_LISTA_PRESOS['fotos']).all()
-        lista_foto = []
-        for elemento in elementos_foto:
-            try:
-                src = retry_em_caso_de_erro(elemento.get_attribute, 'src')
+        # Localizar containers com informações dos presos
+        print(f"[LOG] Localizando containers de presos na página...")
+        print(f"[LOG] Seletor usado: {config.SELETORES_LISTA_PRESOS['containers_informacoes']}")
+        try:
+            containers = page.locator(config.SELETORES_LISTA_PRESOS['containers_informacoes'])
+            print(f"[LOG] Locator criado. Contando elementos...")
+            count_containers = containers.count()
+            print(f"[LOG] Número de containers encontrados: {count_containers}")
+            lista_containers = containers.all()
+            print(f"[LOG] Lista de containers obtida: {len(lista_containers)} elementos")
+            
+            # Localizar links das fotos
+            print(f"[LOG] Localizando fotos...")
+            fotos = page.locator(config.SELETORES_LISTA_PRESOS['fotos'])
+            count_fotos = fotos.count()
+            print(f"[LOG] Número de fotos encontradas: {count_fotos}")
+            # Normalizar os links de foto para URLs completas usando INICIO_URL_FOTOS
+            lista_link = []
+            for foto in fotos.all():
+                src = foto.get_attribute('src') or ""
                 if src:
-                    lista_foto.append(src)
-            except Exception as e:
-                print(f"Erro ao obter atributo src: {e}")
-        
-        # Log do número de fotos encontradas
-        print(f"Encontradas {len(lista_foto)} fotos na unidade {up}")
-        
-        lista_containers = retry_em_caso_de_erro(page.locator, config.SELETORES_LISTA_PRESOS['containers_informacoes']).all()
-        print(f"Encontrados {len(lista_containers)} containers de presos na unidade {up}")
-        
-        # Verificar se o número de fotos corresponde ao número de containers
-        if len(lista_foto) != len(lista_containers):
-            mensagem_diferenca = f"AVISO: Número diferente de fotos ({len(lista_foto)}) e presos ({len(lista_containers)}) na unidade {up}"
-            print(mensagem_diferenca)
-            if usando_interface:
-                interface.atualizar_progresso(mensagem_diferenca, percentual)
-            
-            # Se não encontramos nenhuma foto, usar URLs vazias
-            if len(lista_foto) == 0:
-                print(f"ALERTA: Nenhuma foto encontrada para a unidade {up}. Usando links vazios.")
-                lista_link = [""] * len(lista_containers)
-            # Se temos menos fotos que presos, repetir a última foto ou adicionar vazias
-            elif len(lista_foto) < len(lista_containers):
-                ultima_foto = lista_foto[-1] if lista_foto else ""
-                while len(lista_foto) < len(lista_containers):
-                    if ultima_foto:
-                        lista_foto.append(ultima_foto)
-                    else:
-                        lista_foto.append("")
-            # Se temos mais fotos que presos, truncar a lista
-            else:
-                lista_foto = lista_foto[:len(lista_containers)]
-        
-        # Criar lista de links completos para as fotos
-        lista_link = []
-        for foto in lista_foto:
-            if foto and isinstance(foto, str):
-                # Tenta extrair o ID da foto de várias maneiras possíveis
-                if "../../fotos/presos/" in foto:
-                    # Formato padrão encontrado no HTML
-                    caminho_relativo = foto.split("../../fotos/presos/")[-1]
-                    link = config.INICIO_URL_FOTOS + caminho_relativo
-                elif "/fotos/presos/" in foto:
-                    # Alternativa se o caminho estiver em formato diferente
-                    caminho_relativo = foto.split("/fotos/presos/")[-1]
-                    link = config.INICIO_URL_FOTOS + caminho_relativo
-                elif foto.endswith(".jpg") or foto.endswith(".png") or foto.endswith(".jpeg"):
-                    # Se apenas temos o nome do arquivo, usamos diretamente
-                    link = config.INICIO_URL_FOTOS + foto
+                    nome_arquivo = src.split('/')[-1]
+                    link_completo = config.INICIO_URL_FOTOS + nome_arquivo
                 else:
-                    print(f"AVISO: Formato de foto não reconhecido: {foto}")
-                    link = ""
-                
-                lista_link.append(link)
-            else:
-                # Se não puder extrair o caminho, adiciona link vazio
-                lista_link.append("")
-        
-        # Verificar e ajustar os links conforme necessário
-        if len(lista_link) != len(lista_containers):
-            print(f"ALERTA: Número de links ({len(lista_link)}) diferente do número de presos ({len(lista_containers)}). Ajustando...")
-            if len(lista_link) < len(lista_containers):
-                lista_link.extend([""] * (len(lista_containers) - len(lista_link)))
-            else:
-                lista_link = lista_link[:len(lista_containers)]
-        
-        # Atualizar progresso ao iniciar a coleta de dados dos presos
-        if usando_interface:
-            interface.atualizar_progresso(f"Coletando informações de {len(lista_containers)} presos da unidade {up}", percentual)
-        
-        # Se estiver no modo de teste, limita o número de presos a processar
-        if modo_teste and limite_teste > 0:
-            # Log da limitação
-            msg_limite = f"MODO TESTE: Limitando a {limite_teste} presos na unidade {up} (total disponível: {len(lista_containers)})"
-            print(msg_limite)
-            if usando_interface:
-                interface.atualizar_progresso(msg_limite, percentual)
+                    link_completo = ""
+                lista_link.append(link_completo)
+            print(f"[LOG] Lista de links de fotos obtida: {len(lista_link)} elementos")
             
-            # Limita a lista de containers e links ao número definido no modo de teste
-            lista_containers = lista_containers[:limite_teste] if len(lista_containers) > limite_teste else lista_containers
-            lista_link = lista_link[:limite_teste] if len(lista_link) > limite_teste else lista_link
+            # Se estiver em modo de teste, limita ANTES de processar (para garantir o limite)
+            if modo_teste:
+                limite_aplicar = int(limite_teste)
+                lista_containers = lista_containers[:limite_aplicar]
+                lista_link = lista_link[:limite_aplicar] if lista_link else []
+                print(f"[LOG] Modo teste ativo: limitando a {limite_aplicar} presos por unidade")
+            
+            # Coletar códigos dos presos (após aplicar limite do modo teste)
+            print(f"[LOG] Coletando códigos dos presos...")
+            codigos_site = []
+            for idx, container in enumerate(lista_containers):
+                try:
+                    texto = container.text_content()
+                    codigo = texto.split('\n')[0][2:].strip()
+                    codigos_site.append(codigo)
+                    if idx < 3:  # Log dos primeiros 3 para debug
+                        print(f"[LOG]   Preso {idx+1}: código={codigo}")
+                except Exception as e:
+                    print(f"[LOG] ERRO ao processar container {idx}: {str(e)}")
+            
+            print(f"[LOG] Total de códigos coletados: {len(codigos_site)}")
+            
+            # Verificar quais códigos já existem no Excel
+            print(f"[LOG] Verificando códigos existentes no Excel...")
+            codigos_existentes = set(df_consolidado['CÓDIGO'].values) if not df_consolidado.empty else set()
+            print(f"[LOG] Códigos existentes no Excel: {len(codigos_existentes)}")
+            
+            # Filtrar apenas os containers dos presos que não existem no Excel
+            indices_novos = [i for i, codigo in enumerate(codigos_site) if codigo not in codigos_existentes]
+            print(f"[LOG] Índices de novos presos: {len(indices_novos)}")
+            lista_containers = [lista_containers[i] for i in indices_novos]
+            lista_link = [lista_link[i] for i in indices_novos] if lista_link else []
+            
+            print(f"Unidade {up}: {len(indices_novos)} novos presos encontrados de um total de {len(codigos_site)}")
+            
+        except Exception as e:
+            erro = f"Erro ao localizar elementos na página da unidade {up}: {str(e)}"
+            print(erro)
+            continue
         
-        # Agora processar os containers junto com seus links correspondentes
+        print(f"[LOG] Total de presos a processar nesta unidade: {len(lista_containers)}")
+        
+        # DataFrame para armazenar os dados dos presos desta unidade
+        df_presos = pd.DataFrame(columns=config.COLUNAS)
+        print(f"[LOG] DataFrame criado com {len(config.COLUNAS)} colunas")
+        
+        # Para cada container de preso
+        print(f"[LOG] ===== INICIANDO PROCESSAMENTO DE PRESOS =====")
         for index, container_preso in enumerate(lista_containers):
+            print(f"[LOG] Processando preso {index+1}/{len(lista_containers)}")
             # Atualizar progresso para cada grupo de presos (a cada 10)
             if usando_interface and index % 10 == 0:
                 perc_presos = (index / len(lista_containers)) * 100
@@ -332,19 +563,28 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
             ala, cela = tratar_ala_cela(ala_cela)
             
             # Adicionando dados ao DataFrame da unidade
-            novo_registro = {
+            novo_registro = pd.DataFrame([{
                 'UP': up,
                 'CÓDIGO': codigo, 
+                'CADASTRO': config.URL_FICHA_MENU + codigo,
                 'NOME': nome, 
                 'MÃE': mae, 
                 'CPF': cpf, 
                 'ALA': ala, 
                 'CELA': cela, 
                 'FOTO': link
-            }
-            df_presos = pd.concat([df_presos, pd.DataFrame([novo_registro])], ignore_index=True)
+            }])
+            
+            # Garantir que o novo_registro tenha todas as colunas do df_presos
+            for col in df_presos.columns:
+                if col not in novo_registro.columns:
+                    novo_registro[col] = None
+            
+            df_presos = pd.concat([df_presos, novo_registro], ignore_index=True)
         
         # Atualizar progresso ao iniciar a coleta de informações detalhadas
+        print(f"[LOG] ===== INICIANDO COLETA DE DETALHES DOS PRESOS =====")
+        print(f"[LOG] Total de presos para coletar detalhes: {len(df_presos)}")
         if usando_interface:
             interface.atualizar_progresso(f"Coletando detalhes dos presos da unidade {up}", percentual)
         
@@ -356,8 +596,10 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
             config.URL_CERTIDAO_CARCERARIA: 'URL_CERTIDAO_CARCERARIA',
             config.URL_FICHA_CARCERARIA: 'URL_FICHA_CARCERARIA'
         }
+        print(f"[LOG] URLs a processar: {len(url_para_chave)}")
         
         for j, codigo in enumerate(df_presos['CÓDIGO']):
+            print(f"[LOG] ===== Processando detalhes do preso {j+1}/{len(df_presos)}: código {codigo} =====")
             # Atualizar progresso para cada conjunto de detalhes
             if usando_interface and j % 5 == 0:
                 perc_detalhes = (j / len(df_presos)) * 100
@@ -370,45 +612,62 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
                     return None
             
             # Iterar por cada URL (página) uma única vez
-            for url in config.LISTA_URLS_INFO_PRESO:
+            print(f"[LOG] Processando {len(config.LISTA_URLS_INFO_PRESO)} URLs para o preso {codigo}")
+            for url_idx, url in enumerate(config.LISTA_URLS_INFO_PRESO):
+                print(f"[LOG]   URL {url_idx+1}/{len(config.LISTA_URLS_INFO_PRESO)}: {url}")
                 # Obter a chave correspondente para o dicionário LOCALIZADORES
                 chave_url = url_para_chave.get(url)
                 
                 if not chave_url:
-                    print(f"AVISO: URL {url} não possui mapeamento para LOCALIZADORES. Pulando.")
+                    print(f"[LOG]   AVISO: URL {url} não possui mapeamento para LOCALIZADORES. Pulando.")
                     continue
                 
                 # Verificar se há campos para extrair desta URL
                 if not config.LOCALIZADORES[chave_url]:
+                    print(f"[LOG]   Nenhum localizador configurado para {chave_url}. Pulando.")
                     continue
+                
+                print(f"[LOG]   Localizadores disponíveis: {list(config.LOCALIZADORES[chave_url].keys())}")
                 
                 # Acessar a URL apenas uma vez
                 try:
-                    navegar_para_url(url + codigo)
+                    url_completa = url + codigo
+                    print(f"[LOG]   Navegando para: {url_completa}")
+                    navegar_para_url(page, url_completa)
+                    print(f"[LOG]   Navegação concluída. URL atual: {page.url}")
                     
                     # Extrair todos os campos desta URL de uma só vez
                     for localizador in config.LOCALIZADORES[chave_url]:
                         try:
                             elementos = retry_em_caso_de_erro(page.locator, config.LOCALIZADORES[chave_url][localizador])
                             
-                            if url == config.URL_CERTIDAO_CARCERARIA:
+                            if localizador == 'CONDUTA' and url == config.URL_FICHA_CARCERARIA:
+                                # Conduta: pegar todos os itens e retornar o mais gravoso
+                                texto = extrair_conduta_mais_gravosa(elementos)
+                                df_presos.loc[df_presos['CÓDIGO'] == codigo, localizador] = texto
+                            elif localizador == 'RJI' and url == config.URL_FICHA_PRESO:
+                                # RJI: extração robusta com múltiplos seletores + parse do número (pode ter hífen) e biometria
+                                raw = extrair_rji_ficha(page)
+                                numero_rji, status_biometria = parsear_rji_biometria(raw)
+                                df_presos.loc[df_presos['CÓDIGO'] == codigo, 'RJI'] = numero_rji
+                                df_presos.loc[df_presos['CÓDIGO'] == codigo, 'BIOMETRIA'] = status_biometria
+                            elif url == config.URL_CERTIDAO_CARCERARIA:
                                 # Para URL_CERTIDAO_CARCERARIA, sempre pegar o último item
                                 if elementos.count() > 0:
                                     texto = retry_em_caso_de_erro(elementos.last.text_content).strip()
                                 else:
                                     texto = ""
+                                df_presos.loc[df_presos['CÓDIGO'] == codigo, localizador] = texto
                             else:
                                 # Para outras URLs, sempre pegar o primeiro item
                                 if elementos.count() > 0:
                                     texto = retry_em_caso_de_erro(elementos.first.text_content).strip()
                                 else:
                                     texto = ""
-                                    
-                            # Armazenar o valor no DataFrame
-                            df_presos.loc[df_presos['CÓDIGO'] == codigo, localizador] = texto
+                                df_presos.loc[df_presos['CÓDIGO'] == codigo, localizador] = texto
                             
                         except Exception as e:
-                            tipo_item = "último" if url == config.URL_CERTIDAO_CARCERARIA else "primeiro"
+                            tipo_item = "especial" if localizador in ('CONDUTA', 'RJI') else ("último" if url == config.URL_CERTIDAO_CARCERARIA else "primeiro")
                             erro = f"Erro ao obter {localizador} ({tipo_item}) na URL {url} para o código {codigo}: {str(e)}"
                             print(erro)
                             
@@ -423,10 +682,12 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
                 interface.atualizar_progresso(f"Preso processado: {codigo} - {nome_preso}", None)
         
         # Armazena o DataFrame no dicionário
-        dfs_unidades[up] = df_presos.copy()
-        
-        # Adiciona ao DataFrame consolidado
-        df_consolidado = pd.concat([df_consolidado, df_presos], ignore_index=True)
+        if len(df_presos) > 0:
+            if up in dfs_unidades:
+                dfs_unidades[up] = pd.concat([dfs_unidades[up], df_presos], ignore_index=True, sort=False)
+            else:
+                dfs_unidades[up] = df_presos.copy()
+            df_consolidado = pd.concat([df_consolidado, df_presos], ignore_index=True, sort=False)
     
     # Aplicar tratamentos finais em todos os DataFrames
     for up, df in dfs_unidades.items():
@@ -484,12 +745,32 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
         
         df_consolidado = df_consolidado.sort_values(by=colunas_ordenacao)
         
-        # Remover a coluna temporária
-        df_consolidado = df_consolidado.drop(columns=['_ORDEM_UP'])
+        # Remover a coluna temporária (se existir)
+        if '_ORDEM_UP' in df_consolidado.columns:
+            df_consolidado = df_consolidado.drop(columns=['_ORDEM_UP'])
     
     # Atualizar a interface indicando que o processamento foi concluído
     if usando_interface:
         interface.atualizar_progresso("Processamento concluído! Salvando arquivo...", 95)
+    
+    # Tenta criar um backup silencioso no disco F
+    try:
+        data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_arquivo = f"Informações_Presos_{data_hora}.xlsx"
+        caminho_backup = os.path.join("F:", "PAMC-ADM_Backup", nome_arquivo)
+        
+        # Tenta criar o diretório de backup se não existir
+        os.makedirs(os.path.dirname(caminho_backup), exist_ok=True)
+        
+        # Tenta salvar o backup silenciosamente
+        with pd.ExcelWriter(caminho_backup, engine='xlsxwriter') as writer:
+            if len(dfs_unidades) > 1:
+                reordenar_colunas_excel(df_consolidado).to_excel(writer, sheet_name='Consolidado', index=False)
+            for up, df in dfs_unidades.items():
+                df_sem_up = df.drop(columns=['UP']) if 'UP' in df.columns else df.copy()
+                reordenar_colunas_excel(df_sem_up, excluir_up=True).to_excel(writer, sheet_name=up, index=False)
+    except:
+        pass  # Ignora silenciosamente qualquer erro
     
     # Define o caminho de saída do Excel
     if caminho_saida is None:
@@ -527,15 +808,11 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
             interface.atualizar_progresso("Criando arquivo Excel...", 98)
             
         with pd.ExcelWriter(caminho_saida, engine='xlsxwriter') as writer:
-            # Primeira aba é o consolidado
             if len(dfs_unidades) > 1:
-                df_consolidado.to_excel(writer, sheet_name='Consolidado', index=False)
-            
-            # Uma aba para cada unidade sem a coluna UP
+                reordenar_colunas_excel(df_consolidado).to_excel(writer, sheet_name='Consolidado', index=False)
             for up, df in dfs_unidades.items():
-                # Remove a coluna UP para as abas individuais
-                df_sem_up = df.drop(columns=['UP'])
-                df_sem_up.to_excel(writer, sheet_name=up, index=False)
+                df_sem_up = df.drop(columns=['UP']) if 'UP' in df.columns else df.copy()
+                reordenar_colunas_excel(df_sem_up, excluir_up=True).to_excel(writer, sheet_name=up, index=False)
         
         if usando_interface:
             interface.atualizar_progresso(f"Arquivo Excel criado com sucesso: {caminho_saida}", 100)
@@ -555,7 +832,7 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
             caminho_alternativo = os.path.join(os.path.expanduser('~'), 'presos_unidades_backup.xlsx')
             with pd.ExcelWriter(caminho_alternativo, engine='xlsxwriter') as writer:
                 if len(dfs_unidades) > 1:
-                    df_consolidado.to_excel(writer, sheet_name='Consolidado', index=False)
+                    reordenar_colunas_excel(df_consolidado).to_excel(writer, sheet_name='Consolidado', index=False)
             
             msg_backup = f"Arquivo de backup criado em: {caminho_alternativo}"
             if usando_interface:
@@ -573,5 +850,9 @@ def listar_presos_up(page, caminho_saida=None, interface=None, unidades_selecion
             print(erro_backup)
             return None
     
-    return {'consolidado': df_consolidado, 'unidades': dfs_unidades, 'caminho_excel': caminho_saida}
+    print("[LOG] ===== listar_presos_up() FINALIZADA =====")
+    print(f"[LOG] Retornando resultado com {len(dfs_unidades)} unidades e {len(df_consolidado)} registros consolidados")
+    resultado = {'consolidado': df_consolidado, 'unidades': dfs_unidades, 'caminho_excel': caminho_saida}
+    print(f"[LOG] Caminho do Excel: {caminho_saida}")
+    return resultado
 

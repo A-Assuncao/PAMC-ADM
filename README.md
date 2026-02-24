@@ -15,7 +15,7 @@
 - [Estrutura do Projeto](#estrutura-do-projeto)
 - [Funcionalidades](#funcionalidades)
 - [Interface do Usuário](#interface-do-usuário)
-- [Opções de Execução](#opções-de-execução)
+- [Opções de Desenvolvedor](#opções-de-desenvolvedor)
 - [Sistema de Atualização](#sistema-de-atualização)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
@@ -81,11 +81,13 @@ python run.py
 O aplicativo irá:
 
 1. Apresentar uma interface gráfica para seleção das unidades prisionais
-2. Permitir configurar opções como modo de teste e visibilidade do navegador
+2. Permitir configurar opções de desenvolvedor (modo de teste com 5 ou 10 cadastros por unidade)
 3. Realizar a autenticação no sistema Canaimé através da biblioteca login-canaime
 4. Extrair os dados dos presos das unidades selecionadas
 5. Processar e formatar os dados coletados
 6. Exportar os resultados para um arquivo Excel organizado
+
+O título da janela exibe a versão do sistema (ex.: *Sistema de Extração de Dados Prisionais — v1.0.0*).
 
 Para instruções detalhadas de uso, consulte o [Guia de Utilização](docs/README.md).
 
@@ -116,10 +118,11 @@ Para instruções detalhadas de uso, consulte o [Guia de Utilização](docs/READ
 
 O sistema extrai uma ampla gama de informações dos presos, incluindo:
 
-- **Dados Pessoais**: Nome, data de nascimento, filiação, documentos
-- **Informações Prisionais**: Localização (UP, ala, cela), regime, sentença
-- **Dados Processuais**: Crimes, artigos, processos, datas
-- **Características**: Altura, etnia, estado civil, escolaridade
+- **Identificação e localização**: UP, ala, cela, código, link de cadastro (Ficha_Menu), foto (URL completa)
+- **Dados Pessoais**: Nome, vulgo, data de nascimento, filiação, documentos (CPF, RG), sexo, altura, cor/etnia
+- **Informações Socioeconômicas**: Estado civil, filhos, escolaridade, profissão, religião
+- **RJI e Biometria**: Número RJI (suporta hífens) e status da biometria (Coletada/Não coletada), incluindo o caso em que não há número de RJI mas consta "POSSUI BIOMETRIA"
+- **Informações Prisionais e processuais**: Conduta, regime, sentença, crimes, artigos, processos, datas, último lançamento
 
 ### Processamento de Dados
 
@@ -135,10 +138,12 @@ O sistema aplica automaticamente diversos tratamentos aos dados extraídos:
 
 O resultado final é exportado em um arquivo Excel bem estruturado:
 
-- **Abas por Unidade**: Cada unidade prisional tem sua própria aba
+- **Abas por Unidade**: Cada unidade prisional tem sua própria aba (sem coluna UP na aba da unidade)
 - **Aba Consolidada**: Reúne todos os dados em uma única visualização
-- **Formatação Consistente**: Padronização visual de todos os dados
-- **Ordenação Customizada**: Registros ordenados por ala, cela e nome
+- **Ordem fixa de colunas**: RJI e BIOMETRIA logo após as informações pessoais; coluna **ÚLTIMO LANÇAMENTO** sempre na última posição
+- **Coluna CADASTRO**: Link direto para a ficha do preso (`Ficha_Menu.php?id_cad_preso={código}`)
+- **Coluna FOTO**: URL completa da foto (ex.: `https://canaime.com.br/sgp2rr/fotos/presos/...`)
+- **Ordenação**: Registros ordenados por ala, cela e nome
 
 ## Interface do Usuário
 
@@ -148,14 +153,14 @@ O sistema apresenta uma interface gráfica moderna e intuitiva construída com T
 - **Barra de Progresso**: Visualização em tempo real do andamento
 - **Log em Tempo Real**: Acompanhamento detalhado das operações
 - **Botões de Ação**: Controles claros para iniciar e cancelar o processamento
+- **Fechamento gracioso**: Ao fechar a janela, o sistema aguarda a finalização da extração em andamento (se houver) e encerra o navegador corretamente, evitando erros ao sair
 
-## Opções de Execução
+## Opções de Desenvolvedor
 
-O sistema oferece diversas opções para personalizar a execução:
+Na interface, o painel **Opções de Desenvolvedor** permite:
 
-- **Modo de Teste**: Limita o número de registros processados (5 ou 10 por unidade)
-- **Mostrar Navegador**: Opção para visualizar o navegador durante a execução
-- **Selecionar Unidades**: Flexibilidade para escolher quais unidades processar
+- **Modo de Teste**: Limita o processamento a 5 ou 10 cadastros por unidade (ideal para validar o sistema sem rodar a extração completa). Em modo teste, o Excel existente não é carregado, de modo que o arquivo gerado contém apenas os registros processados nessa execução.
+- **Selecionar Unidades**: Escolher quais unidades prisionais processar
 
 ## Sistema de Atualização
 
