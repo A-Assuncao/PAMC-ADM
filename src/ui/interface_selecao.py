@@ -63,8 +63,8 @@ class SeletorUnidades(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        # Configuração da janela
-        self.title("Sistema de Extração de Dados Prisionais")
+        # Configuração da janela (título com versão dinâmica)
+        self.title(f"Sistema de Extração de Dados Prisionais — {config.APP_VERSION}")
         self.geometry(self.tamanho)
         self.configure(bg=CORES['fundo'])
         
@@ -93,6 +93,20 @@ class SeletorUnidades(tk.Tk):
         
         # Callback para processar seleção
         self.callback_processar = None
+
+        # Fechamento gracioso: evita EPIPE do Playwright ao fechar a janela
+        self.protocol("WM_DELETE_WINDOW", self._ao_fechar_janela)
+
+    def _ao_fechar_janela(self):
+        """Chamado ao fechar a janela: cancela extração se estiver rodando e espera o thread terminar."""
+        if self.processando and self.thread_processamento is not None:
+            self.cancelar = True
+            self.thread_processamento.join(timeout=8.0)
+        self.destroy()
+        try:
+            self.quit()
+        except Exception:
+            pass
 
     def criar_layout(self):
         """Cria o layout principal da aplicação."""
@@ -198,10 +212,10 @@ class SeletorUnidades(tk.Tk):
         control_frame = ttk.Frame(parent)
         control_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
         
-        # Opções de teste
+        # Opções de desenvolvedor
         options_frame = ttk.LabelFrame(
             control_frame, 
-            text="  Opções de Execução  ",
+            text="  Opções de Desenvolvedor  ",
             padding=15,
             style='Card.TLabelframe'
         )
@@ -210,7 +224,6 @@ class SeletorUnidades(tk.Tk):
         # Variáveis para as opções
         self.modo_teste_var = tk.BooleanVar(value=False)
         self.limite_teste_var = tk.IntVar(value=5)
-        self.mostrar_navegador_var = tk.BooleanVar(value=False)
         
         # Modo de teste com descrição
         modo_frame = ttk.Frame(options_frame)
@@ -251,24 +264,6 @@ class SeletorUnidades(tk.Tk):
             value=10
         )
         self.rb_limite_10.pack(anchor=tk.W)
-        
-        # Opção para mostrar navegador
-        navegador_frame = ttk.Frame(options_frame)
-        navegador_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        self.cb_mostrar_navegador = ttk.Checkbutton(
-            navegador_frame,
-            text="Mostrar navegador durante execução",
-            variable=self.mostrar_navegador_var
-        )
-        self.cb_mostrar_navegador.pack(anchor=tk.W)
-        
-        ttk.Label(
-            navegador_frame,
-            text="Útil para acompanhar o processo de extração\nno navegador e resolver problemas",
-            foreground=CORES['texto_secundario'],
-            style='Detail.TLabel'
-        ).pack(anchor=tk.W, padx=(17, 0))
         
         # Inicialmente desabilitar as opções de limite
         self.atualizar_opcoes_teste()
@@ -644,11 +639,10 @@ class SeletorUnidades(tk.Tk):
             self.rb_limite_10.configure(state=tk.DISABLED)
     
     def obter_opcoes_teste(self):
-        """Retorna as opções de teste selecionadas."""
+        """Retorna as opções de desenvolvedor selecionadas."""
         return {
             'modo_teste': self.modo_teste_var.get(),
             'limite_teste': self.limite_teste_var.get(),
-            'mostrar_navegador': self.mostrar_navegador_var.get()
         }
 
     def atualizar_progresso(self, mensagem, percentual=None):
